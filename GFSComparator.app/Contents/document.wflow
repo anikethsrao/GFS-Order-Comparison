@@ -1,0 +1,307 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AMApplicationBuild</key>
+	<string>528</string>
+	<key>AMApplicationVersion</key>
+	<string>2.10</string>
+	<key>AMDocumentVersion</key>
+	<string>2</string>
+	<key>actions</key>
+	<array>
+		<dict>
+			<key>action</key>
+			<dict>
+				<key>AMAccepts</key>
+				<dict>
+					<key>Container</key>
+					<string>List</string>
+					<key>Optional</key>
+					<true/>
+					<key>Types</key>
+					<array>
+						<string>com.apple.applescript.object</string>
+					</array>
+				</dict>
+				<key>AMActionVersion</key>
+				<string>1.0</string>
+				<key>AMApplication</key>
+				<array>
+					<string>Automator</string>
+				</array>
+				<key>AMParameterProperties</key>
+				<dict>
+					<key>source</key>
+					<dict/>
+				</dict>
+				<key>AMProvides</key>
+				<dict>
+					<key>Container</key>
+					<string>List</string>
+					<key>Types</key>
+					<array>
+						<string>com.apple.applescript.object</string>
+					</array>
+				</dict>
+				<key>ActionBundlePath</key>
+				<string>/System/Library/Automator/Run JavaScript.action</string>
+				<key>ActionName</key>
+				<string>Run JavaScript</string>
+				<key>ActionParameters</key>
+				<dict>
+					<key>source</key>
+					<string>ObjC.import('Foundation');
+ObjC.import('AppKit');
+
+function getPath(input) {
+    try {
+        if (typeof input.path === 'function') {
+            return ObjC.unwrap(input.path());
+        }
+    } catch (e) {}
+    return input.toString();
+}
+
+function parseCSVLine(line) {
+    const regex = /(?:\"([^\"]*(?:\"\"[^\"]*)*)\"|([^\",]+)|)(?:,|$)/g;
+    const result = [];
+    let match;
+    let lastIndex = -1;
+
+    while ((match = regex.exec(line)) !== null) {
+        if (regex.lastIndex === lastIndex) break;
+        lastIndex = regex.lastIndex;
+        const quoted = match[1];
+        const unquoted = match[2];
+        result.push(quoted !== undefined ? quoted.replace(/\"\"/g, '"') : unquoted || '');
+    }
+    return result;
+}
+
+function loadExistingMerged(path) {
+    const fileManager = $.NSFileManager.defaultManager;
+    if (!fileManager.fileExistsAtPath($(path))) {
+        return { dataMap: {}, dateHeaders: [] };
+    }
+
+    const contentNSString = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null);
+    if (!contentNSString) return { dataMap: {}, dateHeaders: [] };
+
+    const content = ObjC.unwrap(contentNSString);
+    const lines = content.split('\n').filter(line =&gt; line.trim() !== '');
+    if (lines.length === 0) return { dataMap: {}, dateHeaders: [] };
+
+    const dataMap = {};
+    const dateHeaders = [];
+
+    const headers = parseCSVLine(lines[0]);
+    const itemNumberIdx = 0;
+    const itemDescIdx = 1;
+    const dateStartIdx = 2;
+    const dates = headers.slice(dateStartIdx);
+    dates.forEach(d =&gt; dateHeaders.push(d));
+
+    for (let i = 1; i &lt; lines.length; i++) {
+        const parts = parseCSVLine(lines[i]);
+        if (parts.length &lt; 2) continue;
+
+        const itemNumber = parts[itemNumberIdx].replace(/^"|"$/g, '').trim();
+        const itemDesc = parts[itemDescIdx].replace(/^"|"$/g, '').replace(/""/g, '"').trim();
+        const itemKey = `${itemNumber}||${itemDesc}`;
+        if (!dataMap[itemKey]) {
+            dataMap[itemKey] = {
+                'Item Number': itemNumber,
+                'Item Description': itemDesc,
+                prices: {}
+            };
+        }
+        for (let j = 0; j &lt; dates.length; j++) {
+            const price = parts[j + dateStartIdx];
+            if (price &amp;&amp; price.trim() !== '') {
+                dataMap[itemKey].prices[dates[j]] = price.replace(/^"|"$/g, '');
+            }
+        }
+    }
+
+    return { dataMap, dateHeaders };
+}
+
+function run(argv) {
+    const allDates = [];
+    const firstPath = getPath(argv[0]);
+    const saveFolder = firstPath.replace(/\/[^/]+$/, '');
+    const savePath = saveFolder + '/Merged.csv';
+
+    const { dataMap, dateHeaders } = loadExistingMerged(savePath);
+    dateHeaders.forEach(date =&gt; allDates.push(date));
+
+    argv.forEach(fileInput =&gt; {
+        const path = getPath(fileInput);
+        const fileName = path.split('/').pop().replace('.csv', '');
+        const match = fileName.match(/^(\d{2})(\d{2})(\d{2})/);
+        if (!match) return;
+
+        const [_, dd, mm, yy] = match;
+        const dateStr = `${dd}/${mm}/20${yy}`;
+        allDates.push(dateStr);
+
+        const contentNSString = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null);
+        if (!contentNSString) return;
+
+        const content = ObjC.unwrap(contentNSString);
+        const lines = content.split('\n').filter(line =&gt; line.trim() !== '');
+        if (lines.length === 0) return;
+
+        const headers = parseCSVLine(lines[0]);
+        const itemNumberIdx = headers.indexOf('Item Number');
+        const itemDescIdx = headers.indexOf('Item Description');
+        const priceIdx = headers.indexOf('Price (Case/Unit)');
+
+        if (itemNumberIdx === -1 || itemDescIdx === -1 || priceIdx === -1) return;
+
+        for (let i = 1; i &lt; lines.length; i++) {
+            const parts = parseCSVLine(lines[i]);
+            if (parts.length &lt; Math.max(itemNumberIdx, itemDescIdx, priceIdx) + 1) continue;
+
+            const itemNumber = parts[itemNumberIdx].trim();
+            const itemDesc = parts[itemDescIdx].trim();
+            const price = parts[priceIdx].trim();
+            const itemKey = `${itemNumber}||${itemDesc}`;
+
+            if (!dataMap[itemKey]) {
+                dataMap[itemKey] = {
+                    'Item Number': itemNumber,
+                    'Item Description': itemDesc,
+                    prices: {}
+                };
+            }
+
+            dataMap[itemKey].prices[dateStr] = price;
+        }
+    });
+
+    const sortedDates = [...new Set(allDates)].sort((a, b) =&gt; {
+        const [d1, m1, y1] = a.split('/').map(Number);
+        const [d2, m2, y2] = b.split('/').map(Number);
+        return new Date(y1, m1 - 1, d1) - new Date(y2, m2 - 1, d2);
+    });
+
+    const sortedItems = Object.values(dataMap).sort((a, b) =&gt;
+        a['Item Description'].toLowerCase().localeCompare(b['Item Description'].toLowerCase())
+    );
+
+    let output = ['Item Number', 'Item Description'].concat(sortedDates).join(',') + '\n';
+
+    sortedItems.forEach(entry =&gt; {
+        const row = [
+            `"${entry['Item Number']}"`,
+            `"${entry['Item Description'].replace(/"/g, '""')}"`,
+            ...sortedDates.map(date =&gt; entry.prices[date] ? `"${entry.prices[date]}"` : '')
+        ];
+        output += row.join(',') + '\n';
+    });
+
+    const outStr = $.NSString.alloc.initWithUTF8String(output);
+    const success = outStr.writeToFileAtomicallyEncodingError(savePath, true, $.NSUTF8StringEncoding, null);
+
+    // Move input files to Invoices
+    const invoicesFolder = saveFolder + '/Invoices';
+    const fileManager = $.NSFileManager.defaultManager;
+
+    if (!fileManager.fileExistsAtPath($(invoicesFolder))) {
+        fileManager.createDirectoryAtPathWithIntermediateDirectoriesAttributesError(
+            $(invoicesFolder), true, null, null
+        );
+    }
+
+    argv.forEach(fileInput =&gt; {
+        const originalPath = getPath(fileInput);
+        const fileName = originalPath.split('/').pop();
+        const destPath = invoicesFolder + '/' + fileName;
+
+        if (!fileManager.fileExistsAtPath($(destPath))) {
+            fileManager.moveItemAtPathToPathError($(originalPath), $(destPath), null);
+        }
+        // Else: silently skip
+    });
+
+    if (success) {
+        $.NSWorkspace.sharedWorkspace.openFile(savePath);
+        return "✅ Merged and saved\n" + savePath;
+    } else {
+        return "❌ Failed to write Merged.csv";
+    }
+}
+</string>
+				</dict>
+				<key>BundleIdentifier</key>
+				<string>com.apple.Automator.RunJavaScript</string>
+				<key>CFBundleVersion</key>
+				<string>1.0</string>
+				<key>CanShowSelectedItemsWhenRun</key>
+				<false/>
+				<key>CanShowWhenRun</key>
+				<true/>
+				<key>Category</key>
+				<array>
+					<string>AMCategoryUtilities</string>
+				</array>
+				<key>Class Name</key>
+				<string>RunJavaScriptAction</string>
+				<key>InputUUID</key>
+				<string>17D05170-F7B5-40A4-8322-0B45864252A8</string>
+				<key>Keywords</key>
+				<array>
+					<string>Run</string>
+					<string>JavaScript</string>
+				</array>
+				<key>OutputUUID</key>
+				<string>AFFE7B39-B99B-4969-AEC8-9FA7FD45BFAA</string>
+				<key>UUID</key>
+				<string>28A928AF-9E76-4101-9992-CC821CE60318</string>
+				<key>UnlocalizedApplications</key>
+				<array>
+					<string>Automator</string>
+				</array>
+				<key>arguments</key>
+				<dict>
+					<key>0</key>
+					<dict>
+						<key>default value</key>
+						<string>function run(input, parameters) {
+	
+	// Your script goes here
+
+	return input;
+}</string>
+						<key>name</key>
+						<string>source</string>
+						<key>required</key>
+						<string>0</string>
+						<key>type</key>
+						<string>0</string>
+						<key>uuid</key>
+						<string>0</string>
+					</dict>
+				</dict>
+				<key>isViewVisible</key>
+				<integer>1</integer>
+				<key>location</key>
+				<string>470.000000:516.000000</string>
+				<key>nibPath</key>
+				<string>/System/Library/Automator/Run JavaScript.action/Contents/Resources/Base.lproj/main.nib</string>
+			</dict>
+			<key>isViewVisible</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+	<key>connectors</key>
+	<dict/>
+	<key>workflowMetaData</key>
+	<dict>
+		<key>workflowTypeIdentifier</key>
+		<string>com.apple.Automator.application</string>
+	</dict>
+</dict>
+</plist>
