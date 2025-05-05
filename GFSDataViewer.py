@@ -8,7 +8,7 @@ st.title("GFS Data Viewer")
 
 try:
     # Load CSV
-    df = pd.read_csv("Merged.csv")
+    df = pd.read_csv("merged.csv")
     st.success("CSV loaded successfully!")
 
     # Avoid displaying available columns
